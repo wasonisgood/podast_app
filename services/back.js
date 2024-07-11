@@ -1,10 +1,17 @@
 import { XMLParser } from 'fast-xml-parser';
+const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
 
 export const getPodcastChannels = async (rssUrls) => {
+  const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
+ 
   const channels = [];
   for (const rssUrl of rssUrls) {
     try {
-      const response = await fetch(rssUrl);
+      const response = await fetch(proxyUrl + rssUrl, {
+        headers: {
+          'Origin': 'http://localhost'
+        }
+      });
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -46,12 +53,15 @@ export const getPodcastChannels = async (rssUrls) => {
    
   return channels;
 };
-
 export const searchPodcasts = async (query, rssUrls) => {
   const results = [];
   for (const rssUrl of rssUrls) {
     try {
-      const response = await fetch(rssUrl);
+      const response = await fetch(proxyUrl + rssUrl, {
+        headers: {
+          'Origin': 'http://localhost'
+        }
+      });
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
