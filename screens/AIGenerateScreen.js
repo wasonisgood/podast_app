@@ -1,50 +1,266 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Modal, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  ScrollView,
+  Modal,
+  ActivityIndicator,
+  Animated,
+  Platform,
+  Alert
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
+import { styles } from './AI_styles';
+
+// 先註釋掉 socket.io 的導入，等後端準備好再使用
+// import { io } from 'socket.io-client';
+
+const WEBSOCKET_URL = 'YOUR_WEBSOCKET_SERVER_URL';
+const DEV_MODE = true; // 開發模式標記
 
 const AIGenerateScreen = () => {
+  // State management
   const [topic, setTopic] = useState('');
-  const [voice, setVoice] = useState('男聲');
-  const [speakerType, setSpeakerType] = useState('單人');
+  const [difficulty, setDifficulty] = useState('simple');
+  const [interactionMode, setInteractionMode] = useState('auto');
+  const [roleType, setRoleType] = useState('host-expert');
+  const [voice, setVoice] = useState('male');
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedResult, setGeneratedResult] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
 
-  const VoiceSelector = ({ value, onSelect }) => (
+  // Settings state
+  const [speed, setSpeed] = useState(1);
+  const [emotion, setEmotion] = useState('neutral');
+  const [pitch, setPitch] = useState('medium');
+
+  // WebSocket reference
+  const socketRef = useRef(null);
+  const progressAnimation = useRef(new Animated.Value(0)).current;
+
+  // Mock WebSocket for development
+  const mockWebSocketConnection = () => {
+    console.log('Using mock WebSocket connection');
+    return {
+      emit: (event, data) => {
+        console.log('Mock emit:', event, data);
+      },
+      disconnect: () => {
+        console.log('Mock disconnect');
+      }
+    };
+  };
+
+  // WebSocket setup with error handling
+  useEffect(() => {
+    let mounted = true;
+
+    const setupWebSocket = async () => {
+      try {
+        if (!DEV_MODE) {
+          // 實際 WebSocket 連接的代碼，等後端準備好再啟用
+          // socketRef.current = io(WEBSOCKET_URL);
+          // socketRef.current.on('connect', () => {
+          //   if (mounted) {
+          //     setIsConnected(true);
+          //     console.log('Connected to WebSocket server');
+          //   }
+          // });
+        } else {
+          // 開發模式使用 mock
+          socketRef.current = mockWebSocketConnection();
+          setIsConnected(true);
+        }
+      } catch (error) {
+        console.error('WebSocket connection error:', error);
+        if (mounted) {
+          setIsConnected(false);
+        }
+      }
+    };
+
+    setupWebSocket();
+
+    return () => {
+      mounted = false;
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+      }
+    };
+  }, []);
+
+  // 模擬生成過程
+  const simulateGeneration = () => {
+    setIsGenerating(true);
+    let currentProgress = 0;
+    
+    const interval = setInterval(() => {
+      currentProgress += 5;
+      setProgress(currentProgress);
+      
+      Animated.timing(progressAnimation, {
+        toValue: currentProgress,
+        duration: 300,
+        useNativeDriver: false,
+      }).start();
+
+      if (currentProgress >= 100) {
+        clearInterval(interval);
+        setIsGenerating(false);
+        setGeneratedResult({
+          title: `關於 "${topic}" 的 AI 播客`,
+          audioUrl: 'https://example.com/audio.mp3'
+        });
+      }
+    }, 200);
+  };
+
+  // Component definitions
+  const DifficultySelector = ({ value, onSelect }) => (
     <View style={styles.selectorContainer}>
       <TouchableOpacity
-        style={[styles.selectorOption, value === '男聲' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('男聲')}
+        style={[styles.selectorOption, value === 'simple' && styles.selectorOptionSelected]}
+        onPress={() => onSelect('simple')}
       >
-        <Text style={[styles.selectorText, value === '男聲' && styles.selectorTextSelected]}>男聲</Text>
+        <Text style={[styles.selectorText, value === 'simple' && styles.selectorTextSelected]}>簡單</Text>
       </TouchableOpacity>
       <TouchableOpacity
-        style={[styles.selectorOption, value === '女聲' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('女聲')}
+        style={[styles.selectorOption, value === 'medium' && styles.selectorOptionSelected]}
+        onPress={() => onSelect('medium')}
       >
-        <Text style={[styles.selectorText, value === '女聲' && styles.selectorTextSelected]}>女聲</Text>
+        <Text style={[styles.selectorText, value === 'medium' && styles.selectorTextSelected]}>中等</Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.selectorOption, value === 'hard' && styles.selectorOptionSelected]}
+        onPress={() => onSelect('hard')}
+      >
+        <Text style={[styles.selectorText, value === 'hard' && styles.selectorTextSelected]}>困難</Text>
       </TouchableOpacity>
     </View>
   );
 
-  const SpeakerTypeSelector = ({ value, onSelect }) => (
+  const InteractionModeSelector = ({ value, onSelect }) => (
     <View style={styles.selectorContainer}>
       <TouchableOpacity
-        style={[styles.selectorOption, value === '單人' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('單人')}
+        style={[styles.selectorOption, value === 'interactive' && styles.selectorOptionSelected]}
+        onPress={() => onSelect('interactive')}
       >
-        <Text style={[styles.selectorText, value === '單人' && styles.selectorTextSelected]}>單人</Text>
+        <Text style={[styles.selectorText, value === 'interactive' && styles.selectorTextSelected]}>互動式</Text>
       </TouchableOpacity>
       <TouchableOpacity
-        style={[styles.selectorOption, value === '雙人' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('雙人')}
+        style={[styles.selectorOption, value === 'auto' && styles.selectorOptionSelected]}
+        onPress={() => onSelect('auto')}
       >
-        <Text style={[styles.selectorText, value === '雙人' && styles.selectorTextSelected]}>雙人</Text>
+        <Text style={[styles.selectorText, value === 'auto' && styles.selectorTextSelected]}>自動生成</Text>
       </TouchableOpacity>
     </View>
   );
 
+  const RoleTypeSelector = ({ value, onSelect }) => (
+    <View style={styles.roleContainer}>
+      <TouchableOpacity
+        style={[styles.roleOption, value === 'host-expert' && styles.roleOptionSelected]}
+        onPress={() => onSelect('host-expert')}
+      >
+        <Text style={[styles.selectorText, value === 'host-expert' && styles.selectorTextSelected]}>
+          主持人 vs 專家
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.roleOption, value === 'peer-discussion' && styles.roleOptionSelected]}
+        onPress={() => onSelect('peer-discussion')}
+      >
+        <Text style={[styles.selectorText, value === 'peer-discussion' && styles.selectorTextSelected]}>
+          同學討論
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.roleOption, value === 'teacher-student' && styles.roleOptionSelected]}
+        onPress={() => onSelect('teacher-student')}
+      >
+        <Text style={[styles.selectorText, value === 'teacher-student' && styles.selectorTextSelected]}>
+          老師教學
+        </Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  // File upload handler with error handling
+  const handleFileUpload = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['application/pdf', 'text/plain'],
+        copyToCacheDirectory: true,
+      });
+
+      if (result.type === 'success') {
+        setUploadedFile(result);
+        if (socketRef.current && !DEV_MODE) {
+          socketRef.current.emit('fileUpload', {
+            name: result.name,
+            uri: result.uri,
+            type: result.mimeType,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Error picking document:', err);
+      Alert.alert('錯誤', '選擇文件時發生錯誤，請重試。');
+    }
+  };
+
+  const handleGenerate = () => {
+    if (!topic.trim()) {
+      Alert.alert('提示', '請輸入播客主題');
+      return;
+    }
+    setShowTokenModal(true);
+  };
+
+  const handleConfirmGenerate = () => {
+    setShowTokenModal(false);
+
+    if (DEV_MODE) {
+      simulateGeneration();
+      return;
+    }
+
+    if (!isConnected) {
+      Alert.alert('錯誤', '無法連接到服務器，請檢查網絡連接後重試。');
+      return;
+    }
+
+    setIsGenerating(true);
+
+    if (socketRef.current) {
+      socketRef.current.emit('startGeneration', {
+        topic,
+        difficulty,
+        interactionMode,
+        roleType,
+        voice,
+        settings: {
+          speed,
+          emotion,
+          pitch
+        },
+        uploadedFile: uploadedFile ? {
+          name: uploadedFile.name,
+          uri: uploadedFile.uri
+        } : null
+      });
+    }
+  };
+
+  // Token Modal Component
   const TokenModal = ({ visible, onClose, onConfirm }) => (
     <Modal
       animationType="fade"
@@ -59,10 +275,16 @@ const AIGenerateScreen = () => {
           <Text style={styles.modalText}>音頻轉換: 5 代幣</Text>
           <Text style={styles.modalText}>總計: 15 代幣</Text>
           <View style={styles.modalButtonContainer}>
-            <TouchableOpacity style={styles.modalButton} onPress={onClose}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.modalCancelButton]} 
+              onPress={onClose}
+            >
               <Text style={styles.modalButtonText}>取消</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.modalButton, styles.modalConfirmButton]} onPress={onConfirm}>
+            <TouchableOpacity 
+              style={[styles.modalButton, styles.modalConfirmButton]}
+              onPress={onConfirm}
+            >
               <Text style={styles.modalButtonText}>確認生成</Text>
             </TouchableOpacity>
           </View>
@@ -71,53 +293,12 @@ const AIGenerateScreen = () => {
     </Modal>
   );
 
-  const GeneratingAnimation = () => (
-    <View style={styles.generatingContainer}>
-      <ActivityIndicator size="large" color="#4A4A4A" />
-      <Text style={styles.generatingText}>正在生成您的 AI 播客...</Text>
-    </View>
-  );
-
-  const GeneratedResult = ({ result, onAdjust }) => (
-    <View style={styles.resultContainer}>
-      <Text style={styles.resultTitle}>生成結果</Text>
-      <Text style={styles.resultText}>{result.title}</Text>
-      <TouchableOpacity style={styles.playButton}>
-        <Feather name="play" size={20} color="#FFFFFF" />
-        <Text style={styles.playButtonText}>試聽</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={styles.adjustButton} onPress={onAdjust}>
-        <Text style={styles.adjustButtonText}>調整生成結果</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const handleGenerate = () => {
-    setShowTokenModal(true);
-  };
-
-  const handleConfirmGenerate = () => {
-    setShowTokenModal(false);
-    setIsGenerating(true);
-    // 模擬生成過程
-    setTimeout(() => {
-      setIsGenerating(false);
-      setGeneratedResult({
-        title: `關於 "${topic}" 的 AI 播客`,
-        audioUrl: 'https://example.com/audio.mp3'
-      });
-    }, 3000);
-  };
-
-  const handleAdjust = () => {
-    // 這裡可以添加調整邏輯
-    console.log('Adjusting generated result');
-  };
-
+  // Main render
   return (
     <LinearGradient colors={['#F5EBE0', '#E8DCCA']} style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.headerText}>AI 播客生成器</Text>
+        
         <View style={styles.card}>
           <Text style={styles.label}>播客主題</Text>
           <TextInput
@@ -127,230 +308,65 @@ const AIGenerateScreen = () => {
             value={topic}
             onChangeText={setTopic}
           />
-          <Text style={styles.label}>選擇音色</Text>
-          <VoiceSelector value={voice} onSelect={setVoice} />
-          <Text style={styles.label}>單人或雙人</Text>
-          <SpeakerTypeSelector value={speakerType} onSelect={setSpeakerType} />
-          <TouchableOpacity style={styles.uploadButton}>
+
+          <Text style={styles.label}>難度設置</Text>
+          <DifficultySelector value={difficulty} onSelect={setDifficulty} />
+
+          <Text style={styles.label}>互動模式</Text>
+          <InteractionModeSelector value={interactionMode} onSelect={setInteractionMode} />
+
+          <Text style={styles.label}>角色設定</Text>
+          <RoleTypeSelector value={roleType} onSelect={setRoleType} />
+
+          <TouchableOpacity style={styles.uploadButton} onPress={handleFileUpload}>
             <Feather name="upload" size={20} color="#4A4A4A" />
-            <Text style={styles.uploadButtonText}>上傳參考資料</Text>
+            <Text style={styles.uploadButtonText}>
+              {uploadedFile ? uploadedFile.name : '上傳參考資料'}
+            </Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.generateButton} onPress={handleGenerate}>
-            <Text style={styles.generateButtonText}>生成</Text>
+
+          <TouchableOpacity 
+            style={styles.generateButton}
+            onPress={handleGenerate}
+          >
+            <Text style={styles.generateButtonText}>開始生成</Text>
           </TouchableOpacity>
         </View>
-        
-        {isGenerating && <GeneratingAnimation />}
-        {generatedResult && <GeneratedResult result={generatedResult} onAdjust={handleAdjust} />}
-        
-        <TokenModal 
-          visible={showTokenModal} 
+
+        {isGenerating && (
+          <View style={styles.progressContainer}>
+            <ActivityIndicator size="large" color="#4A4A4A" />
+            <Animated.View 
+              style={[
+                styles.progressBar,
+                { width: progressAnimation.interpolate({
+                  inputRange: [0, 100],
+                  outputRange: ['0%', '100%']
+                })}
+              ]}
+            />
+            <Text style={styles.progressText}>{`生成進度: ${progress}%`}</Text>
+          </View>
+        )}
+
+        {generatedResult && (
+          <View style={styles.resultContainer}>
+            <Text style={styles.modalTitle}>{generatedResult.title}</Text>
+            <TouchableOpacity style={styles.playButton}>
+              <Feather name="play" size={20} color="#FFFFFF" />
+              <Text style={styles.playButtonText}>試聽</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <TokenModal
+          visible={showTokenModal}
           onClose={() => setShowTokenModal(false)}
           onConfirm={handleConfirmGenerate}
         />
       </ScrollView>
     </LinearGradient>
   );
-};
-
-const styles = {
-  container: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-    alignItems: 'center',
-  },
-  headerText: {
-    fontSize: 28,
-    fontWeight: '300',
-    color: '#3A3A3A',
-    marginBottom: 30,
-    fontFamily: 'Helvetica Neue',
-  },
-  card: {
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    borderRadius: 15,
-    padding: 20,
-    width: '100%',
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  label: {
-    fontSize: 16,
-    color: '#3A3A3A',
-    marginBottom: 10,
-    fontFamily: 'Helvetica Neue',
-    fontWeight: '500',
-  },
-  input: {
-    width: '100%',
-    height: 50,
-    borderWidth: 1,
-    borderColor: '#D0D0D0',
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    fontSize: 16,
-    marginBottom: 20,
-    color: '#3A3A3A',
-    fontFamily: 'Helvetica Neue',
-  },
-  selectorContainer: {
-    flexDirection: 'row',
-    marginBottom: 20,
-  },
-  selectorOption: {
-    flex: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderWidth: 1,
-    borderColor: '#D0D0D0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  selectorOptionSelected: {
-    backgroundColor: '#4A4A4A',
-  },
-  selectorText: {
-    color: '#4A4A4A',
-    fontSize: 16,
-    fontFamily: 'Helvetica Neue',
-  },
-  selectorTextSelected: {
-    color: '#FFFFFF',
-  },
-  uploadButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F5EBE0',
-    borderRadius: 8,
-    paddingVertical: 12,
-    marginBottom: 20,
-  },
-  uploadButtonText: {
-    color: '#4A4A4A',
-    fontSize: 16,
-    marginLeft: 10,
-    fontFamily: 'Helvetica Neue',
-  },
-  generateButton: {
-    backgroundColor: '#4A4A4A',
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: 'center',
-  },
-  generateButtonText: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '500',
-    fontFamily: 'Helvetica Neue',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 15,
-    padding: 20,
-    width: '80%',
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 15,
-    color: '#3A3A3A',
-  },
-  modalText: {
-    fontSize: 16,
-    marginBottom: 10,
-    color: '#3A3A3A',
-  },
-  modalButtonContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    marginTop: 20,
-  },
-  modalButton: {
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    backgroundColor: '#E0E0E0',
-  },
-  modalConfirmButton: {
-    backgroundColor: '#4A4A4A',
-  },
-  modalButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '500',
-  },
-  generatingContainer: {
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  generatingText: {
-    marginTop: 10,
-    fontSize: 16,
-    color: '#3A3A3A',
-  },
-  resultContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.8)',
-    borderRadius: 15,
-    padding: 20,
-    width: '100%',
-    marginTop: 20,
-    alignItems: 'center',
-  },
-  resultTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    marginBottom: 15,
-    color: '#3A3A3A',
-  },
-  resultText: {
-    fontSize: 16,
-    marginBottom: 15,
-    color: '#3A3A3A',
-    textAlign: 'center',
-  },
-  playButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#4A4A4A',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    marginBottom: 15,
-  },
-  playButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    marginLeft: 10,
-  },
-  adjustButton: {
-    backgroundColor: '#E0E0E0',
-    borderRadius: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  adjustButtonText: {
-    color: '#3A3A3A',
-    fontSize: 16,
-  },
 };
 
 export default AIGenerateScreen;

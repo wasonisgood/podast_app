@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useContext } from 'react';
-import { View, Text, TouchableOpacity, Image, Animated, Modal, FlatList, Dimensions, Alert, ActivityIndicator, PanResponder } from 'react-native';
+import { View, Text, TouchableOpacity, Image, Animated, Modal, FlatList, Dimensions, Alert, ActivityIndicator, PanResponder, AppState } from 'react-native';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -65,6 +65,7 @@ const PlayerScreen = ({ navigation, route }) => {
 
   useEffect(() => {
     loadAudio();
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
     return () => {
       if (sound) {
         sound.unloadAsync();
@@ -72,11 +73,21 @@ const PlayerScreen = ({ navigation, route }) => {
       if (adSound) {
         adSound.unloadAsync();
       }
+      subscription.remove();
     };
   }, [currentEpisodeIndex]);
 
+  const handleAppStateChange = async (nextAppState) => {
+    console.log('AppState changed to', nextAppState);
+    if (nextAppState.match(/inactive|background/) && isPlaying) {
+      console.log('App is going to the background, keeping audio playing');
+      await sound.setStatusAsync({ shouldPlay: true, staysActiveInBackground: true, playsInBackground: true });
+    }
+  };
+
   const loadAudio = async () => {
     try {
+      console.log('Loading audio...');
       setIsLoading(true);
       setLoadingProgress(0);
 
@@ -100,7 +111,7 @@ const PlayerScreen = ({ navigation, route }) => {
 
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: currentEpisode.audioUrl },
-        { shouldPlay: false },
+        { shouldPlay: false, staysActiveInBackground: true, playsInBackground: true },
         onPlaybackStatusUpdate,
         onLoadProgress
       );
