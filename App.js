@@ -16,6 +16,7 @@ import LearningPlanScreen from './screens/LearningPlanScreen';
 import TreePlantingScreen from './screens/TreePlantingScreen';
 import { PlayerProvider, PlayerContext } from './PlayerContext';
 import MiniPlayer from './screens/MiniPlayer';
+import 'react-native-get-random-values';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();

@@ -28,6 +28,11 @@ const PlayerScreen = ({ navigation, route }) => {
   const [lastNonSilentTime, setLastNonSilentTime] = useState(0);
   const silenceThreshold = -50; // 靜音閾值，單位為分貝
   const silenceDuration = 2000; // 檢測靜音的持續時間，單位為毫秒
+  
+  console.log('Podcast ID:', podcast.id);
+  console.log('Current Episode Index:', currentEpisodeIndex);
+  
+  
 
   const lyrics = [
     "這是第一行歌詞", "這是第二行歌詞", "這是第三行歌詞",
@@ -84,62 +89,81 @@ const PlayerScreen = ({ navigation, route }) => {
       await sound.setStatusAsync({ shouldPlay: true, staysActiveInBackground: true, playsInBackground: true });
     }
   };
-
+  const extractValidUrl = (url) => {
+    // 使用正則表達式匹配嵌套的有效音頻 URL
+    const match = url.match(/https:\/\/d3mww1g1pfq2pt\.cloudfront\.net\/.*\.mp3\?v=\d+/);
+    return match ? match[0] : null; // 如果匹配到則返回 URL，否則返回 null
+  };
+  
   const loadAudio = async () => {
     try {
-      console.log('Loading audio...');
-      setIsLoading(true);
-      setLoadingProgress(0);
-
-      const netInfo = await Network.getNetworkStateAsync();
-      if (!netInfo.isConnected || !netInfo.isInternetReachable) {
-        throw new Error('No internet connection');
+      console.log('--- Starting to load audio ---');
+      const skipNetworkCheck = true;
+  
+      if (!skipNetworkCheck) {
+        const netInfo = await Network.getNetworkStateAsync();
+        if (!netInfo.isConnected || !netInfo.isInternetReachable) {
+          throw new Error('No internet connection');
+        }
       }
-
-      if (typeof stopOtherPlaybacks === 'function') {
-        await stopOtherPlaybacks();
+  
+      const currentEpisode = allEpisodes[currentEpisodeIndex];
+      if (!currentEpisode) {
+        throw new Error('Current episode is undefined');
       }
-
+  
+      console.log('Raw Audio URL:', currentEpisode.audioUrl);
+      const decodedUrl = decodeURIComponent(currentEpisode.audioUrl);
+      console.log('Decoded Audio URL:', decodedUrl);
+  
+      // 提取有效的音頻 URL
+      const validUrl = extractValidUrl(decodedUrl);
+      if (!validUrl) {
+        throw new Error(`Unable to extract valid URL from: ${decodedUrl}`);
+      }
+      console.log('Valid Audio URL:', validUrl);
+  
       if (sound) {
         await sound.unloadAsync();
       }
-
-      const currentEpisode = allEpisodes[currentEpisodeIndex];
-      if (!currentEpisode || !currentEpisode.audioUrl) {
-        throw new Error('Invalid episode or audio URL');
-      }
-
+  
+      console.log('Attempting to create new Audio.Sound...');
       const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: currentEpisode.audioUrl },
-        { shouldPlay: false, staysActiveInBackground: true, playsInBackground: true },
-        onPlaybackStatusUpdate,
-        onLoadProgress
+        { uri: validUrl },
+        {
+          shouldPlay: false,
+          staysActiveInBackground: true,
+          playsInBackground: true,
+        },
+        onPlaybackStatusUpdate
       );
-
-      // 預加載本地廣告音訊
-      const { sound: newAdSound } = await Audio.Sound.createAsync(
-        require('../assets/sample-audio.mp3'), // 將 'ad-audio.mp3' 放在您的項目中的 assets 文件夾
-        { shouldPlay: false }
-      );
-      setAdSound(newAdSound);
-
+  
       setSound(newSound);
       setCurrentEpisode(currentEpisode);
       setIsLoading(false);
-      console.log('Audio loaded successfully');
+  
+      console.log('Audio successfully loaded:', validUrl);
     } catch (error) {
-      console.error('Error loading audio:', error);
+      console.error('Error loading audio:', error.message);
+  
       setIsLoading(false);
-      if (error.message === 'No internet connection') {
+  
+      if (error.message.includes('No internet connection')) {
         Alert.alert('網絡錯誤', '請檢查您的網絡連接並重試。');
-      } else if (error.message === 'Invalid episode or audio URL') {
-        Alert.alert('數據錯誤', '無效的音頻數據。請聯繫支持團隊。');
+      } else if (error.message.includes('Unable to extract valid URL')) {
+        Alert.alert('音頻加載失敗', '無法從音頻地址中提取有效的 URL。');
       } else {
         Alert.alert('加載錯誤', `無法加載音頻文件：${error.message}`);
       }
     }
   };
-
+  
+  
+  
+  
+  
+  
+  
   const onPlaybackStatusUpdate = async (status) => {
     if (status.isLoaded) {
       setDuration(status.durationMillis);
@@ -271,7 +295,7 @@ const PlayerScreen = ({ navigation, route }) => {
             <Image source={{ uri: allEpisodes[currentEpisodeIndex].imageUrl }} style={styles.playerImage} />
             <Text style={styles.playerTitle}>{allEpisodes[currentEpisodeIndex].title}</Text>
             <Text style={styles.playerAuthor}>{allEpisodes[currentEpisodeIndex].author}</Text>
-            
+
             <Animated.FlatList
               data={lyrics}
               renderItem={renderLyric}

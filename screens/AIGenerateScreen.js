@@ -1,372 +1,943 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  ScrollView,
-  Modal,
+import { 
+  View, 
+  Text, 
+  TextInput, 
+  TouchableOpacity, 
+  ScrollView, 
+  StyleSheet, 
   ActivityIndicator,
-  Animated,
-  Platform,
-  Alert
+  Alert,
+  Platform
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Feather } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
-import { styles } from './AI_styles';
+import { Audio } from 'expo-av';
+import { v4 as uuidv4 } from 'uuid'; // 引入 UUID 生成器
 
-// 先註釋掉 socket.io 的導入，等後端準備好再使用
-// import { io } from 'socket.io-client';
-
-const WEBSOCKET_URL = 'YOUR_WEBSOCKET_SERVER_URL';
-const DEV_MODE = true; // 開發模式標記
-
-const AIGenerateScreen = () => {
-  // State management
+const AIPodcastGenerator = () => {
+  // 基礎狀態
+  const [step, setStep] = useState('input'); // input -> survey -> analysis -> dialogue
+  const [wsStatus, setWsStatus] = useState('disconnected');
+  const ws = useRef(null);
   const [topic, setTopic] = useState('');
-  const [difficulty, setDifficulty] = useState('simple');
-  const [interactionMode, setInteractionMode] = useState('auto');
-  const [roleType, setRoleType] = useState('host-expert');
-  const [voice, setVoice] = useState('male');
-  const [showTokenModal, setShowTokenModal] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generatedResult, setGeneratedResult] = useState(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [uploadedFile, setUploadedFile] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
+  const [survey, setSurvey] = useState(null);
+  const [surveyResponses, setSurveyResponses] = useState({});
+  const [analysis, setAnalysis] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // 音訊相關狀態
+  const [dialogue, setDialogue] = useState([]);
+  const [currentAudioIndex, setCurrentAudioIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const soundObject = useRef(null);
+// 問題錯誤狀態管理
+const [validationErrors, setValidationErrors] = useState({});
 
-  // Settings state
-  const [speed, setSpeed] = useState(1);
-  const [emotion, setEmotion] = useState('neutral');
-  const [pitch, setPitch] = useState('medium');
+const renderQuestion = (question) => {
+  const response = surveyResponses[question.question_id];
+  const validationError = validationErrors[question.question_id];
 
-  // WebSocket reference
-  const socketRef = useRef(null);
-  const progressAnimation = useRef(new Animated.Value(0)).current;
+  // 渲染問題標題和描述
+  const QuestionHeader = () => (
+    <>
+      <Text style={styles.questionTitle}>
+        {question.required && <Text style={styles.requiredMark}>* </Text>}
+        {question.title}
+      </Text>
+      {question.description && (
+        <Text style={styles.questionDesc}>{question.description}</Text>
+      )}
+    </>
+  );
 
-  // Mock WebSocket for development
-  const mockWebSocketConnection = () => {
-    console.log('Using mock WebSocket connection');
-    return {
-      emit: (event, data) => {
-        console.log('Mock emit:', event, data);
-      },
-      disconnect: () => {
-        console.log('Mock disconnect');
+  // 處理答案更新
+  const handleResponse = (value) => {
+    console.log('Updating response:', question.question_id, value);
+    let error = '';
+    
+    // 根據問題類型進行驗證
+    if (question.validation) {
+      switch (question.type) {
+        case 'text':
+          const length = value?.length || 0;
+          if (length < question.validation.min_length) {
+            error = `最少需要 ${question.validation.min_length} 個字`;
+          } else if (length > question.validation.max_length) {
+            error = `不能超過 ${question.validation.max_length} 個字`;
+          }
+          break;
+          
+        case 'multiple_choice':
+          const selectedCount = (value || []).length;
+          if (selectedCount < question.validation.min_select) {
+            error = `至少選擇 ${question.validation.min_select} 項`;
+          } else if (selectedCount > question.validation.max_select) {
+            error = `最多選擇 ${question.validation.max_select} 項`;
+          }
+          break;
+          
+        case 'rating':
+          if (value < question.validation.min) {
+            error = `最小值為 ${question.validation.min}`;
+          } else if (value > question.validation.max) {
+            error = `最大值為 ${question.validation.max}`;
+          }
+          break;
       }
-    };
+    }
+    
+    setValidationErrors(prev => ({
+      ...prev,
+      [question.question_id]: error
+    }));
+
+    setSurveyResponses(prev => ({
+      ...prev,
+      [question.question_id]: value
+    }));
   };
 
-  // WebSocket setup with error handling
+  switch (question.type) {
+    case 'single_choice':
+      return (
+        <View key={question.question_id} style={styles.questionContainer}>
+          <QuestionHeader />
+          <View style={styles.optionsContainer}>
+            {question.options.map((option) => (
+              <TouchableOpacity
+                key={option.option_id}
+                style={[
+                  styles.option,
+                  response === option.value && styles.selectedOption
+                ]}
+                onPress={() => handleResponse(option.value)}
+              >
+                <View style={styles.optionRow}>
+                  <View style={[
+                    styles.radioButton,
+                    response === option.value && styles.radioButtonSelected
+                  ]}>
+                    {response === option.value && (
+                      <View style={styles.radioButtonInner} />
+                    )}
+                  </View>
+                  <Text style={[
+                    styles.optionText,
+                    response === option.value && styles.selectedOptionText
+                  ]}>
+                    {option.label}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {validationError && (
+            <Text style={styles.errorText}>{validationError}</Text>
+          )}
+        </View>
+      );
+
+    case 'multiple_choice':
+      const selectedValues = response || [];
+      return (
+        <View key={question.question_id} style={styles.questionContainer}>
+          <QuestionHeader />
+          <View style={styles.optionsContainer}>
+            {question.options.map((option) => (
+              <TouchableOpacity
+                key={option.option_id}
+                style={[
+                  styles.option,
+                  selectedValues.includes(option.value) && styles.selectedOption
+                ]}
+                onPress={() => {
+                  const newValues = selectedValues.includes(option.value)
+                    ? selectedValues.filter(v => v !== option.value)
+                    : [...selectedValues, option.value];
+                  handleResponse(newValues);
+                }}
+              >
+                <View style={styles.optionRow}>
+                  <View style={[
+                    styles.checkbox,
+                    selectedValues.includes(option.value) && styles.checkboxSelected
+                  ]}>
+                    {selectedValues.includes(option.value) && (
+                      <Text style={styles.checkmark}>✓</Text>
+                    )}
+                  </View>
+                  <Text style={[
+                    styles.optionText,
+                    selectedValues.includes(option.value) && styles.selectedOptionText
+                  ]}>
+                    {option.label}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {validationError && (
+            <Text style={styles.errorText}>{validationError}</Text>
+          )}
+        </View>
+      );
+
+    case 'rating':
+      const maxRating = question.validation?.max || 5;
+      const minRating = question.validation?.min || 1;
+      return (
+        <View key={question.question_id} style={styles.questionContainer}>
+          <QuestionHeader />
+          <View style={styles.ratingContainer}>
+            {Array.from({ length: maxRating - minRating + 1 }, (_, i) => i + minRating).map((rating) => (
+              <TouchableOpacity
+                key={rating}
+                style={[
+                  styles.ratingButton,
+                  response === rating && styles.selectedRating
+                ]}
+                onPress={() => handleResponse(rating)}
+              >
+                <Text style={[
+                  styles.ratingText,
+                  response === rating && styles.selectedRatingText
+                ]}>
+                  {rating}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {validationError && (
+            <Text style={styles.errorText}>{validationError}</Text>
+          )}
+        </View>
+      );
+
+    case 'text':
+      return (
+        <View key={question.question_id} style={styles.questionContainer}>
+          <QuestionHeader />
+          <TextInput
+            style={[
+              styles.textInput,
+              Platform.OS === 'ios' ? { padding: 12 } : { textAlignVertical: 'top' }
+            ]}
+            multiline
+            numberOfLines={4}
+            value={response || ''}
+            onChangeText={(text) => handleResponse(text)}
+            placeholder="請輸入您的回答..."
+            placeholderTextColor="#999"
+            maxLength={question.validation?.max_length || 500}
+          />
+          {validationError && (
+            <Text style={styles.errorText}>{validationError}</Text>
+          )}
+          <Text style={styles.textCounter}>
+            {(response?.length || 0)} / {question.validation?.max_length || 500}
+          </Text>
+        </View>
+      );
+
+    default:
+      return null;
+  }
+};
+
+  const handleSurveyResponse = (questionId, value) => {
+    setSurveyResponses(prev => ({
+      ...prev,
+      [questionId]: value
+    }));
+  };
   useEffect(() => {
-    let mounted = true;
-
-    const setupWebSocket = async () => {
-      try {
-        if (!DEV_MODE) {
-          // 實際 WebSocket 連接的代碼，等後端準備好再啟用
-          // socketRef.current = io(WEBSOCKET_URL);
-          // socketRef.current.on('connect', () => {
-          //   if (mounted) {
-          //     setIsConnected(true);
-          //     console.log('Connected to WebSocket server');
-          //   }
-          // });
-        } else {
-          // 開發模式使用 mock
-          socketRef.current = mockWebSocketConnection();
-          setIsConnected(true);
-        }
-      } catch (error) {
-        console.error('WebSocket connection error:', error);
-        if (mounted) {
-          setIsConnected(false);
-        }
-      }
-    };
-
-    setupWebSocket();
-
+    connectWebSocket();
     return () => {
-      mounted = false;
-      if (socketRef.current) {
-        socketRef.current.disconnect();
+      if (ws.current) {
+        ws.current.close();
       }
+      cleanupAudio();
     };
   }, []);
 
-  // 模擬生成過程
-  const simulateGeneration = () => {
-    setIsGenerating(true);
-    let currentProgress = 0;
-    
-    const interval = setInterval(() => {
-      currentProgress += 5;
-      setProgress(currentProgress);
-      
-      Animated.timing(progressAnimation, {
-        toValue: currentProgress,
-        duration: 300,
-        useNativeDriver: false,
-      }).start();
-
-      if (currentProgress >= 100) {
-        clearInterval(interval);
-        setIsGenerating(false);
-        setGeneratedResult({
-          title: `關於 "${topic}" 的 AI 播客`,
-          audioUrl: 'https://example.com/audio.mp3'
-        });
+  const cleanupAudio = async () => {
+    if (soundObject.current) {
+      try {
+        await soundObject.current.unloadAsync();
+      } catch (error) {
+        console.error('清理音訊資源時出錯:', error);
       }
-    }, 200);
+    }
   };
 
-  // Component definitions
-  const DifficultySelector = ({ value, onSelect }) => (
-    <View style={styles.selectorContainer}>
-      <TouchableOpacity
-        style={[styles.selectorOption, value === 'simple' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('simple')}
-      >
-        <Text style={[styles.selectorText, value === 'simple' && styles.selectorTextSelected]}>簡單</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.selectorOption, value === 'medium' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('medium')}
-      >
-        <Text style={[styles.selectorText, value === 'medium' && styles.selectorTextSelected]}>中等</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.selectorOption, value === 'hard' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('hard')}
-      >
-        <Text style={[styles.selectorText, value === 'hard' && styles.selectorTextSelected]}>困難</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const InteractionModeSelector = ({ value, onSelect }) => (
-    <View style={styles.selectorContainer}>
-      <TouchableOpacity
-        style={[styles.selectorOption, value === 'interactive' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('interactive')}
-      >
-        <Text style={[styles.selectorText, value === 'interactive' && styles.selectorTextSelected]}>互動式</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.selectorOption, value === 'auto' && styles.selectorOptionSelected]}
-        onPress={() => onSelect('auto')}
-      >
-        <Text style={[styles.selectorText, value === 'auto' && styles.selectorTextSelected]}>自動生成</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const RoleTypeSelector = ({ value, onSelect }) => (
-    <View style={styles.roleContainer}>
-      <TouchableOpacity
-        style={[styles.roleOption, value === 'host-expert' && styles.roleOptionSelected]}
-        onPress={() => onSelect('host-expert')}
-      >
-        <Text style={[styles.selectorText, value === 'host-expert' && styles.selectorTextSelected]}>
-          主持人 vs 專家
-        </Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.roleOption, value === 'peer-discussion' && styles.roleOptionSelected]}
-        onPress={() => onSelect('peer-discussion')}
-      >
-        <Text style={[styles.selectorText, value === 'peer-discussion' && styles.selectorTextSelected]}>
-          同學討論
-        </Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        style={[styles.roleOption, value === 'teacher-student' && styles.roleOptionSelected]}
-        onPress={() => onSelect('teacher-student')}
-      >
-        <Text style={[styles.selectorText, value === 'teacher-student' && styles.selectorTextSelected]}>
-          老師教學
-        </Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  // File upload handler with error handling
-  const handleFileUpload = async () => {
+  const connectWebSocket = () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['application/pdf', 'text/plain'],
-        copyToCacheDirectory: true,
+      const wsUrl = Platform.select({
+        ios: 'ws://140.114.216.25:8888',
+        android: 'ws://140.114.216.25:8888',
+        default: 'ws://140.114.216.25:8888'
       });
+      
+      ws.current = new WebSocket(wsUrl);
+      
+      ws.current.onopen = () => {
+        console.log('WebSocket connection established');
+        setWsStatus('connected');
+      };
 
-      if (result.type === 'success') {
-        setUploadedFile(result);
-        if (socketRef.current && !DEV_MODE) {
-          socketRef.current.emit('fileUpload', {
-            name: result.name,
-            uri: result.uri,
-            type: result.mimeType,
-          });
-        }
+      ws.current.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleWebSocketMessage(data);
+      };
+
+      ws.current.onclose = () => {
+        console.log('WebSocket connection closed');
+        setWsStatus('disconnected');
+      };
+
+      ws.current.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setWsStatus('error');
+      };
+    } catch (error) {
+      console.error('Failed to create WebSocket connection:', error);
+      setWsStatus('error');
+    }
+  };
+
+  const handleWebSocketMessage = (data) => {
+    setIsLoading(false);
+    
+    if (data.status === 'success') {
+      if (data.survey) {
+        setSurvey(data.survey);
+        setStep('survey');
+      } else if (data.analysis) {
+        setAnalysis(data.analysis);
+        setStep('analysis');
+      } else if (data.dialogue) {
+        setDialogue(data.dialogue);
+        setStep('dialogue');
       }
-    } catch (err) {
-      console.error('Error picking document:', err);
-      Alert.alert('錯誤', '選擇文件時發生錯誤，請重試。');
+    } else if (data.status === 'section_ready') {
+      setDialogue(prevDialogue => 
+        prevDialogue.map(entry => 
+          entry.id === data.id 
+            ? { ...entry, audioFile: data.audio_file }
+            : entry
+        )
+      );
+    } else if (data.error) {
+      Alert.alert('錯誤', data.error);
     }
   };
-
-  const handleGenerate = () => {
+  const handleGenerateSurvey = () => {
     if (!topic.trim()) {
-      Alert.alert('提示', '請輸入播客主題');
+      Alert.alert('提示', '請輸入主題');
       return;
     }
-    setShowTokenModal(true);
+  
+    const surveyId = uuidv4(); // 生成唯一 ID
+    setIsLoading(true);
+  
+    if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+      setTimeout(() => {
+        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+          sendSurveyRequest(surveyId);
+        } else {
+          setIsLoading(false);
+          Alert.alert('錯誤', '無法連接到服務器，請稍後重試');
+        }
+      }, 1000);
+    } else {
+      sendSurveyRequest(surveyId);
+    }
+  };
+  
+  const sendSurveyRequest = (surveyId) => {
+    const message = {
+      type: 'survey_generate',
+      topic: topic,
+      survey_id: surveyId // 傳遞生成的 ID
+    };
+    try {
+      ws.current.send(JSON.stringify(message));
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setIsLoading(false);
+      Alert.alert('錯誤', '發送請求失敗，請重試');
+    }
   };
 
-  const handleConfirmGenerate = () => {
-    setShowTokenModal(false);
-
-    if (DEV_MODE) {
-      simulateGeneration();
+  const handleSurveySubmit = () => {
+    if (!survey || !survey.survey_id) {
+      Alert.alert('錯誤', '未找到有效的問卷 ID');
       return;
     }
-
-    if (!isConnected) {
-      Alert.alert('錯誤', '無法連接到服務器，請檢查網絡連接後重試。');
+  
+    // 檢查是否所有必填問題都已回答
+    const unansweredQuestions = survey.sections.flatMap(section =>
+      section.questions.filter(q =>
+        q.required && !surveyResponses[q.question_id]
+      )
+    );
+  
+    if (unansweredQuestions.length > 0) {
+      Alert.alert('提示', '請回答所有必填問題');
       return;
     }
+  
+    setIsLoading(true);
+  
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify({
+        type: 'survey_submit',
+        survey_id: survey.survey_id, // 傳遞問卷 ID
+        responses: surveyResponses
+      }));
+    }
+  };
+  
 
-    setIsGenerating(true);
+  const handleGenerateDialogue = () => {
+    if (!survey || !survey.survey_id) {
+      Alert.alert('錯誤', '未找到有效的問卷 ID');
+      return;
+    }
+  
+    setIsLoading(true);
+  
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      const message = {
+        type: 'dialogue',
+        topic: topic,
+        survey_id: survey.survey_id, // 傳遞問卷 ID
+        use_context: true
+      };
+  
+      ws.current.send(JSON.stringify(message));
+    }
+  };
+  
+  const playAudio = async (audioFile) => {
+    try {
+      if (!audioFile) {
+        console.warn('音訊文件尚未準備好');
+        return;
+      }
 
-    if (socketRef.current) {
-      socketRef.current.emit('startGeneration', {
-        topic,
-        difficulty,
-        interactionMode,
-        roleType,
-        voice,
-        settings: {
-          speed,
-          emotion,
-          pitch
-        },
-        uploadedFile: uploadedFile ? {
-          name: uploadedFile.name,
-          uri: uploadedFile.uri
-        } : null
+      // 如果有正在播放的音訊，先停止並卸載
+      if (soundObject.current) {
+        await soundObject.current.unloadAsync();
+      }
+
+      // 創建新的音訊對象並加載
+      soundObject.current = new Audio.Sound();
+      await soundObject.current.loadAsync({ uri: audioFile });
+      
+      // 開始播放
+      await soundObject.current.playAsync();
+      setIsPlaying(true);
+
+      // 設置播放狀態更新處理
+      soundObject.current.setOnPlaybackStatusUpdate(async (status) => {
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+          // 如果還有下一段音訊，自動播放
+          if (currentAudioIndex < dialogue.length - 1) {
+            setCurrentAudioIndex(prev => prev + 1);
+            const nextAudio = dialogue[currentAudioIndex + 1].audioFile;
+            if (nextAudio) {
+              playAudio(nextAudio);
+            }
+          }
+        }
       });
+    } catch (error) {
+      console.error('播放音訊時出錯:', error);
+      Alert.alert('錯誤', '播放音訊時發生錯誤');
+      setIsPlaying(false);
     }
   };
 
-  // Token Modal Component
-  const TokenModal = ({ visible, onClose, onConfirm }) => (
-    <Modal
-      animationType="fade"
-      transparent={true}
-      visible={visible}
-      onRequestClose={onClose}
-    >
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          <Text style={styles.modalTitle}>代幣花費明細</Text>
-          <Text style={styles.modalText}>生成播客: 10 代幣</Text>
-          <Text style={styles.modalText}>音頻轉換: 5 代幣</Text>
-          <Text style={styles.modalText}>總計: 15 代幣</Text>
-          <View style={styles.modalButtonContainer}>
-            <TouchableOpacity 
-              style={[styles.modalButton, styles.modalCancelButton]} 
-              onPress={onClose}
-            >
-              <Text style={styles.modalButtonText}>取消</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.modalButton, styles.modalConfirmButton]}
-              onPress={onConfirm}
-            >
-              <Text style={styles.modalButtonText}>確認生成</Text>
-            </TouchableOpacity>
+  const pauseAudio = async () => {
+    if (soundObject.current) {
+      try {
+        await soundObject.current.pauseAsync();
+        setIsPlaying(false);
+      } catch (error) {
+        console.error('暫停音訊時出錯:', error);
+        Alert.alert('錯誤', '暫停音訊時發生錯誤');
+      }
+    }
+  };
+
+  const renderDialogueContent = () => (
+    <ScrollView style={styles.container}>
+      <Text style={styles.title}>播客內容</Text>
+      <View style={styles.dialogueContainer}>
+        {dialogue.map((entry, index) => (
+          <View key={entry.id} style={styles.dialogueEntry}>
+            <View style={styles.speakerInfo}>
+              <Text style={styles.speakerName}>{entry.user || '講者'}</Text>
+              {entry.audioFile && (
+                <TouchableOpacity
+                  style={[
+                    styles.playButton,
+                    currentAudioIndex === index && isPlaying && styles.playingButton
+                  ]}
+                  onPress={() => {
+                    if (currentAudioIndex === index && isPlaying) {
+                      pauseAudio();
+                    } else {
+                      setCurrentAudioIndex(index);
+                      playAudio(entry.audioFile);
+                    }
+                  }}
+                >
+                  <Text style={styles.playButtonText}>
+                    {currentAudioIndex === index && isPlaying ? '暫停' : '播放'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <Text style={styles.dialogueText}>{entry.text}</Text>
           </View>
-        </View>
+        ))}
       </View>
-    </Modal>
+      <TouchableOpacity
+        style={styles.button}
+        onPress={() => setStep('input')}
+      >
+        <Text style={styles.buttonText}>重新開始</Text>
+      </TouchableOpacity>
+    </ScrollView>
   );
-
-  // Main render
-  return (
-    <LinearGradient colors={['#F5EBE0', '#E8DCCA']} style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.headerText}>AI 播客生成器</Text>
-        
-        <View style={styles.card}>
-          <Text style={styles.label}>播客主題</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="輸入您的播客主題"
-            placeholderTextColor="#A0A0A0"
-            value={topic}
-            onChangeText={setTopic}
-          />
-
-          <Text style={styles.label}>難度設置</Text>
-          <DifficultySelector value={difficulty} onSelect={setDifficulty} />
-
-          <Text style={styles.label}>互動模式</Text>
-          <InteractionModeSelector value={interactionMode} onSelect={setInteractionMode} />
-
-          <Text style={styles.label}>角色設定</Text>
-          <RoleTypeSelector value={roleType} onSelect={setRoleType} />
-
-          <TouchableOpacity style={styles.uploadButton} onPress={handleFileUpload}>
-            <Feather name="upload" size={20} color="#4A4A4A" />
-            <Text style={styles.uploadButtonText}>
-              {uploadedFile ? uploadedFile.name : '上傳參考資料'}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity 
-            style={styles.generateButton}
-            onPress={handleGenerate}
-          >
-            <Text style={styles.generateButtonText}>開始生成</Text>
-          </TouchableOpacity>
-        </View>
-
-        {isGenerating && (
-          <View style={styles.progressContainer}>
-            <ActivityIndicator size="large" color="#4A4A4A" />
-            <Animated.View 
-              style={[
-                styles.progressBar,
-                { width: progressAnimation.interpolate({
-                  inputRange: [0, 100],
-                  outputRange: ['0%', '100%']
-                })}
-              ]}
+  const renderContent = () => {
+    switch (step) {
+      case 'input':
+        return (
+          <View style={styles.container}>
+            <Text style={styles.title}>AI 播客生成器</Text>
+            <Text style={styles.subtitle}>第一步：確定主題</Text>
+            <TextInput
+              style={styles.topicInput}
+              value={topic}
+              onChangeText={setTopic}
+              placeholder="請輸入您想要生成的播客主題..."
+              placeholderTextColor="#999"
             />
-            <Text style={styles.progressText}>{`生成進度: ${progress}%`}</Text>
-          </View>
-        )}
-
-        {generatedResult && (
-          <View style={styles.resultContainer}>
-            <Text style={styles.modalTitle}>{generatedResult.title}</Text>
-            <TouchableOpacity style={styles.playButton}>
-              <Feather name="play" size={20} color="#FFFFFF" />
-              <Text style={styles.playButtonText}>試聽</Text>
+            <TouchableOpacity
+              style={styles.button}
+              onPress={handleGenerateSurvey}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>生成問卷</Text>
+              )}
             </TouchableOpacity>
+            {wsStatus === 'error' && (
+              <Text style={styles.errorText}>伺服器連接失敗，請檢查網路連接</Text>
+            )}
           </View>
-        )}
+        );
 
-        <TokenModal
-          visible={showTokenModal}
-          onClose={() => setShowTokenModal(false)}
-          onConfirm={handleConfirmGenerate}
-        />
-      </ScrollView>
-    </LinearGradient>
-  );
+      case 'survey':
+        return (
+          <ScrollView style={styles.container}>
+            <Text style={styles.title}>{survey.title || '問卷調查'}</Text>
+            <Text style={styles.description}>{survey.description}</Text>
+            {survey.sections.map((section) => (
+              <View key={section.section_id} style={styles.sectionContainer}>
+                <Text style={styles.sectionTitle}>{section.title}</Text>
+                <Text style={styles.sectionDesc}>{section.description}</Text>
+                {section.questions.map((question) => renderQuestion(question))}
+              </View>
+            ))}
+            <TouchableOpacity
+              style={styles.button}
+              onPress={handleSurveySubmit}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>提交問卷</Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        );
+
+      case 'analysis':
+        return (
+          <ScrollView style={styles.container}>
+            <Text style={styles.title}>分析結果</Text>
+            <View style={styles.analysisContainer}>
+              <Text style={styles.analysisTitle}>知識水平</Text>
+              <Text style={styles.analysisText}>
+                {analysis.overview.knowledge_level.description}
+              </Text>
+              
+              <Text style={styles.analysisTitle}>興趣領域</Text>
+              {analysis.overview.interest_areas.map((area, index) => (
+                <Text key={index} style={styles.analysisText}>
+                  {area.area} (優先級: {area.priority})
+                </Text>
+              ))}
+              
+              <Text style={styles.analysisTitle}>建議方向</Text>
+              {analysis.recommendations.key_points.map((point, index) => (
+                <Text key={index} style={styles.analysisText}>• {point}</Text>
+              ))}
+            </View>
+            <TouchableOpacity
+              style={styles.button}
+              onPress={handleGenerateDialogue}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>生成對話</Text>
+              )}
+            </TouchableOpacity>
+          </ScrollView>
+        );
+
+      case 'dialogue':
+        return renderDialogueContent();
+
+      default:
+        return null;
+    }
+  };
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      padding: 20,
+      backgroundColor: '#f5f5f5'
+    },
+    title: {
+      fontSize: 24,
+      fontWeight: 'bold',
+      marginBottom: 20,
+      color: '#333'
+    },
+    subtitle: {
+      fontSize: 18,
+      marginBottom: 15,
+      color: '#666'
+    },
+    description: {
+      fontSize: 16,
+      marginBottom: 20,
+      color: '#666'
+    },
+    errorText: {
+      color: '#FF3B30',
+      marginTop: 10,
+      textAlign: 'center'
+    },
+    topicInput: {
+      backgroundColor: '#fff',
+      padding: 15,
+      borderRadius: 8,
+      marginBottom: 20,
+      fontSize: 16
+    },
+    button: {
+      backgroundColor: '#007AFF',
+      padding: 15,
+      borderRadius: 8,
+      alignItems: 'center',
+      marginVertical: 10
+    },
+    buttonText: {
+      color: '#fff',
+      fontSize: 16,
+      fontWeight: '600'
+    },
+    sectionContainer: {
+      marginBottom: 30
+    },
+    sectionTitle: {
+      fontSize: 20,
+      fontWeight: '600',
+      marginBottom: 10,
+      color: '#333'
+    },
+    sectionDesc: {
+      fontSize: 16,
+      marginBottom: 15,
+      color: '#666'
+    },
+  
+      // 問卷相關樣式
+      questionContainer: {
+        marginBottom: 24,
+        backgroundColor: '#FFFFFF',
+        padding: 16,
+        borderRadius: 12,
+        ...Platform.select({
+          ios: {
+            shadowColor: '#000000',
+            shadowOffset: { width: 0, height: 2 },
+            shadowOpacity: 0.1,
+            shadowRadius: 4,
+          },
+          android: {
+            elevation: 4,
+          },
+        }),
+      },
+      questionTitle: {
+        fontSize: 16,
+        fontWeight: '600',
+        marginBottom: 8,
+        color: '#333333',
+        lineHeight: 24,
+      },
+      requiredMark: {
+        color: '#F44336',
+        fontWeight: 'bold',
+      },
+      questionDesc: {
+        fontSize: 14,
+        marginBottom: 12,
+        color: '#666666',
+        lineHeight: 20,
+      },
+      optionsContainer: {
+        marginTop: 8,
+      },
+      optionRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+      },
+      option: {
+        backgroundColor: '#F5F5F5',
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: 8,
+        borderWidth: 1,
+        borderColor: '#E0E0E0',
+      },
+      selectedOption: {
+        backgroundColor: '#E3F2FD',
+        borderColor: '#2196F3',
+      },
+      optionText: {
+        fontSize: 16,
+        color: '#333333',
+        flex: 1,
+        marginLeft: 12,
+      },
+      selectedOptionText: {
+        color: '#2196F3',
+      },
+      radioButton: {
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        borderWidth: 2,
+        borderColor: '#757575',
+        justifyContent: 'center',
+        alignItems: 'center',
+      },
+      radioButtonSelected: {
+        borderColor: '#2196F3',
+      },
+      radioButtonInner: {
+        width: 10,
+        height: 10,
+        borderRadius: 5,
+        backgroundColor: '#2196F3',
+      },
+      checkbox: {
+        width: 20,
+        height: 20,
+        borderRadius: 4,
+        borderWidth: 2,
+        borderColor: '#757575',
+        justifyContent: 'center',
+        alignItems: 'center',
+      },
+      checkboxSelected: {
+        backgroundColor: '#2196F3',
+        borderColor: '#2196F3',
+      },
+      checkmark: {
+        color: '#FFFFFF',
+        fontSize: 14,
+        fontWeight: 'bold',
+      },
+      ratingContainer: {
+        flexDirection: 'row',
+        justifyContent: 'space-around',
+        marginTop: 12,
+        marginBottom: 8,
+      },
+      ratingButton: {
+        width: 44,
+        height: 44,
+        borderRadius: 22,
+        backgroundColor: '#F5F5F5',
+        justifyContent: 'center',
+        alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#E0E0E0',
+      },
+      selectedRating: {
+        backgroundColor: '#2196F3',
+        borderColor: '#2196F3',
+      },
+      ratingText: {
+        fontSize: 16,
+        color: '#757575',
+        fontWeight: '600',
+      },
+      selectedRatingText: {
+        color: '#FFFFFF',
+      },
+      textInput: {
+        backgroundColor: '#F5F5F5',
+        padding: 12,
+        borderRadius: 8,
+        minHeight: 120,
+        textAlignVertical: 'top',
+        fontSize: 16,
+        color: '#333333',
+        borderWidth: 1,
+        borderColor: '#E0E0E0',
+      },
+      textCounter: {
+        fontSize: 12,
+        color: '#757575',
+        textAlign: 'right',
+        marginTop: 4,
+      },
+      errorText: {
+        color: '#F44336',
+        fontSize: 12,
+        marginTop: 4,
+        marginLeft: 4,
+      },
+    optionsContainer: {
+      marginTop: 10
+    },
+    option: {
+      backgroundColor: '#fff',
+      padding: 15,
+      borderRadius: 8,
+      marginBottom: 10
+    },
+    selectedOption: {
+      backgroundColor: '#007AFF'
+    },
+    optionText: {
+      fontSize: 16,
+      color: '#333'
+    },
+    selectedOptionText: {
+      color: '#fff'
+    },
+    ratingContainer: {
+      flexDirection: 'row',
+      justifyContent: 'space-around',
+      marginTop: 10
+    },
+    ratingButton: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: '#fff',
+      justifyContent: 'center',
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: '#007AFF'
+    },
+    selectedRating: {
+      backgroundColor: '#007AFF'
+    },
+    ratingText: {
+      fontSize: 16,
+      color: '#007AFF'
+    },
+    selectedRatingText: {
+      color: '#fff'
+    },
+    textInput: {
+      backgroundColor: '#fff',
+      padding: 15,
+      borderRadius: 8,
+      height: 120,
+      textAlignVertical: 'top',
+      fontSize: 16
+    },
+    analysisContainer: {
+      backgroundColor: '#fff',
+      padding: 20,
+      borderRadius: 8,
+      marginBottom: 20
+    },
+    analysisTitle: {
+      fontSize: 18,
+      fontWeight: '600',
+      marginBottom: 10,
+      color: '#333'
+    },
+    analysisText: {
+      fontSize: 16,
+      marginBottom: 8,
+      color: '#666'
+    },
+    dialogueContainer: {
+      backgroundColor: '#fff',
+      padding: 15,
+      borderRadius: 8,
+      marginBottom: 20,
+    },
+    dialogueEntry: {
+      marginBottom: 20,
+      borderBottomWidth: 1,
+      borderBottomColor: '#eee',
+      paddingBottom: 15,
+    },
+    speakerInfo: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    speakerName: {
+      fontSize: 16,
+      fontWeight: '600',
+      color: '#007AFF',
+    },
+    dialogueText: {
+      fontSize: 16,
+      color: '#333',
+      lineHeight: 24,
+    },
+    playButton: {
+      backgroundColor: '#007AFF',
+      paddingHorizontal: 15,
+      paddingVertical: 8,
+      borderRadius: 5,
+    },
+    playingButton: {
+      backgroundColor: '#FF3B30',
+    },
+    playButtonText: {
+      color: '#fff',
+      fontSize: 14,
+      fontWeight: '500',
+    },
+  });
+
+  return renderContent();
 };
 
-export default AIGenerateScreen;
+export default AIPodcastGenerator;
